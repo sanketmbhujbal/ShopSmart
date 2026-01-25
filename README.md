@@ -20,7 +20,9 @@ Modern semantic search (Vector Search) is powerful but **computationally expensi
 
 * **Intelligent Reranking:** Uses `cross-encoder/ms-marco-TinyBERT-L-2-v2` to re-score the top 20 results based on deep semantic intent.
 
-* **Latency Optimized:** * **Distillation:** Swapped standard BERT (110M params) for TinyBERT (14M params).
+* **Latency Optimized:** 
+
+    * **Distillation:** Swapped standard BERT (110M params) for TinyBERT (14M params).
 
     * **Budgeting:** Limits expensive reranking to the top 12 candidates only.
     
