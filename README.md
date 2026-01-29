@@ -83,7 +83,7 @@ We define the following SLIs (Indicators) and SLOs (Targets) to ensure the syste
 •	**Impact:** Vectors find "Mouse" when you search "Input Device". Keywords ensure "Samsung S24" doesn't return "Samsung S23".
 
 
-### Decision 3: Silent Monitoring
+### Decision 3: Zero-Dependency Observability
 
 •	**Context:** Real-time dashboards are complex to set up.
 
@@ -99,6 +99,15 @@ We define the following SLIs (Indicators) and SLOs (Targets) to ensure the syste
 |Latency (P95)|~2,800 ms|~145 ms|19x Faster 🚀|
 |Throughput|0.3 QPS|7.0 QPS|Scalable|
 |NDCG@10|0.88|0.85|Negligible Loss|
+
+---
+## Known Limitations: 
+
+**Long-tail queries:** Descriptions without rich metadata suffer on recall.
+
+**Multilingual contexts:** The current BERT model is English-optimized.
+
+**Synonym Expansion:** Candidate budgeting can sometimes miss items under heavy synonym expansion.
 
 ---
 ## Installation
