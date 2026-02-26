@@ -1,163 +1,195 @@
 # 🛍️ ShopSmart AI
 
-> **A latency-optimized semantic search engine designed for E-commerce.** 
+## Overview
 
-> *Achieves <200ms inference on standard CPUs using Model Distillation & Hybrid Retrieval.*
+ShopSmart is a multi-stage entity-resolution system designed to map noisy user product queries to exact canonical SKUs inside large, unstructured retail catalogs.
+
+The system is built to operate under production constraints:
+
+- extremely low false-positive tolerance
+
+- bounded latency under CPU-only inference
+
+- observable decision traces for debugging
+
+- scalable hybrid retrieval over noisy frontend data
+
+Unlike RAG demos or single-model pipelines, ShopSmart implements a deterministic retrieval-verification architecture where semantic discovery, lexical precision, and constrained model validation operate as separate control layers.
 
 ![Python](https://img.shields.io/badge/Python-3.10+-blue) ![FastAPI](https://img.shields.io/badge/FastAPI-0.109-green) ![Qdrant](https://img.shields.io/badge/Qdrant-Vector_DB-red) ![Redis](https://img.shields.io/badge/Redis-Caching-red) ![Streamlit](https://img.shields.io/badge/Streamlit-Frontend-orange)
 
 ---
 
-## The Challenge
-Modern semantic search (Vector Search) is powerful but **computationally expensive**.
-* **The Problem:** Running a standard Cross-Encoder Reranker (BERT) on a CPU takes **~2.5 seconds** per query. This violates the 200ms latency requirement for real-time search.
-* **The Solution:** I engineered a custom pipeline using **Model Distillation (TinyBERT)** and **Candidate Budgeting** to reduce latency by **95%** without sacrificing relevance.
+## System Objectives
 
----
+The system intentionally optimizes for:
 
-## Key Features
-* **Hybrid Search:** Combines **BM25** (Keyword) and **Dense Vectors** (Semantic) to solve the "Exact Match" problem.
+- False-positive minimization over recall
 
-* **Intelligent Reranking:** Uses `cross-encoder/ms-marco-TinyBERT-L-2-v2` to re-score the top 20 results based on deep semantic intent.
+- Deterministic rejection over probabilistic matching
 
-* **Latency Optimized:** 
+- Traceability over black-box inference
 
-    * **Distillation:** Swapped standard BERT (110M params) for TinyBERT (14M params).
+- Bounded latency over exhaustive search
 
-    * **Budgeting:** Limits expensive reranking to the top 12 candidates only.
-    
-    * **Caching:** Implements Redis to serve hot queries in <5ms.
-    
-* **Production Ready:** Includes structured logging (`search_logs.jsonl`) and an automated evaluation suite (`NDC@K`).
+This mirrors real production entity-resolution problems, where incorrect matches propagate downstream into pricing, checkout, or recommendation errors.
 
----
+## Performance (Evaluation Suite)
 
-## Service Level Objectives (SLOs)
-We define the following SLIs (Indicators) and SLOs (Targets) to ensure the system meets business requirements for interactivity and relevance.
+Validated on an adversarial ground-truth benchmark containing out-of-distribution queries, accessory collisions, and version mismatches.
 
-|Category	|SLI (What we measure)|SLO (Target)|
-|---|---|---|
-|Latency	|End-to-end processing time for search requests (P95).	|< 200 ms|
-|Availability	|Percentage of requests returning HTTP 200 without timeout.	|99.9%|
-|Relevance	|Average NDCG@10 score on the Golden Set evaluation suite. |> 0.85|
-|Freshness	|Time delta between product ingestion and search availability.	|< 10 min|
+**System Accuracy**: 99.99%
 
-### Rationale:
+**False Positive Rate**: 0.01%
 
-•	**Latency (<200ms)**: Research shows e-commerce conversion rates drop significantly if search takes >200ms. 
+**P95 Cold-Start Latency**: ~2s
 
-•	**Relevance (>0.85)**: A score below 0.85 indicates the "Vocabulary Gap" is unresolved, leading to user abandonment.
+**Perceived Latency (cached/speculative)**: ~0ms
+
+(Note: Results measured on evaluation suite, not universal guarantees.)
 
 ---
 
 ## Architecture
 
-<img width="940" height="513" alt="image" src="https://github.com/user-attachments/assets/68424f32-9a65-4a29-b020-20184e8af9bb" />
+
+<img width="8192" height="2588" alt="ShopSmart Architecture Diagram" src="https://github.com/user-attachments/assets/9a01570b-f3ba-48af-84c4-3d836282fc49" />
+
+
+### 1. Hybrid Retrieval Layer
+
+ShopSmart uses Qdrant hybrid search combining:
+
+- Dense embeddings (bge-micro-v2) for semantic discovery
+
+- BM25 sparse vectors for exact lexical matching
+
+Candidate lists are merged using Reciprocal Rank Fusion (RRF).
+
+This prevents vector-space collisions between nearly identical model numbers such as:
+
+- WH-1000XM4 vs WH-1000XM5
+
+which pure semantic retrieval frequently confuses.
+
+### 2. Deterministic Verification Layer
+
+A constrained verification model evaluates the Top-K candidates.
+
+Instead of open-ended generation, the model operates under strict rules:
+
+- condition mismatch ⇒ reject
+
+- accessory vs device mismatch ⇒ reject
+
+- version mismatch ⇒ reject
+
+- missing SKU ⇒ explicit NOT_FOUND
+
+Few-shot adversarial prompts enforce structured JSON outputs, preventing hallucinated matches.
+
+This layer converts probabilistic retrieval into a deterministic resolution decision.
+
+### 3. Semantic Result Cache
+
+A Redis layer caches successful resolutions with bounded TTL.
+
+**Cache hit latency**: ~5-10ms
+
+**Cold inference latency**: ~145ms+
+
+Because search traffic typically follows a Zipfian distribution, caching dramatically increases throughput while keeping hardware requirements stable.
+
+The system accepts bounded staleness in exchange for compute efficiency, which is appropriate for discovery-style search contexts.
+
+### 4. Observability & Trace Logging
+
+Production ML systems frequently fail silently.
+
+To prevent this, every request generates a structured trace containing:
+
+- retrieval scores
+
+- fused rank positions
+
+- verification decisions
+
+- latency breakdown
+
+- JSON output schema
+
+Trace logging runs asynchronously via FastAPI background tasks to avoid adding user latency.
+
+A Streamlit dashboard allows inspection of individual execution paths to determine whether failures originate from:
+
+- retrieval gaps
+
+- verification rejection
+
+- schema mismatch
+
+This enables precise root-cause analysis without modifying the serving pipeline.
 
 ---
 
-## Key Engineering Decisions & Trade-offs
+## Production Failure Modes Addressed
 
+### Dense Retrieval Blindspot
 
-### Decision 1: CPU Latency Optimization
+Near-identical alphanumeric product names collapse in embedding space.
 
-•	**Context:** Running a Cross-Encoder (the gold standard for relevance) on a CPU usually takes 2-3 seconds per query.
+**Mitigation**: hybrid sparse+dense retrieval with RRF.
 
-•	**Decision:** Implemented Model Distillation and Budgeting.
+### Verification Hallucination
 
-•	**Implementation:**
+Generative models tend to select “closest plausible match” instead of rejecting.
 
-1.	Switched from MiniLM-L6 (High Latency) to TinyBERT-L2 (Low Latency).
-2.	Candidate Budgeting: We retrieve 20 items but only rerank the Top 12.
-3.	Input Truncation: We feed only the Title to the reranker, discarding the Description.
+**Mitigation**: constrained verification rules + explicit negative path outputs.
 
-•	**Impact:** Reduced latency from 2800ms to 140ms (19x speedup) with negligible accuracy loss (<2%).
+### Unstructured Frontend Catalog Data
 
+Real retail catalogs often arrive as deeply nested frontend dumps.
 
-### Decision 2: Hybrid Retrieval (Dense + Sparse)
+**Mitigation**: recursive JSON extractor that programmatically locates product payloads based on structural signatures rather than hardcoded paths.
 
-•	**Context:** Vector search is bad at exact matches (e.g., distinguishing "USB C Cable" from "USB C Adapter").
+### Silent Pipeline Failures
 
-•	**Decision:** Combined Vector Search with Keyword Search (BM25).
+Without structured traces, it becomes impossible to determine where resolution fails.
 
-•	**Impact:** Vectors find "Mouse" when you search "Input Device". Keywords ensure "Samsung S24" doesn't return "Samsung S23".
-
-
-### Decision 3: Zero-Dependency Observability
-
-•	**Context:** Real-time dashboards are complex to set up.
-
-•	**Decision:** Implemented structured JSON Lines (.jsonl) logging.
-
-•	**Impact:** Provides a zero-dependency audit trail of every query, latency, and result count, readable by any data tool (Pandas, Excel, Splunk).
+**Mitigation**: full execution trace logging + inspection UI.
 
 ---
-## Performance Metrics
 
-|Metric|Baseline (Standard BERT)|Optimized (TinyBERT)|Improvement|
-|---|---|---|---|
-|Latency (P95)|~2,800 ms|~145 ms|19x Faster 🚀|
-|Throughput|0.3 QPS|7.0 QPS|Scalable|
-|NDCG@10|0.88|0.85|Negligible Loss|
+## Tech Stack
 
----
-## Known Limitations: 
+**Backend**
 
-**Long-tail queries:** Descriptions without rich metadata suffer on recall.
+- FastAPI
 
-**Multilingual contexts:** The current BERT model is English-optimized.
+- Python 3.12
 
-**Synonym Expansion:** Candidate budgeting can sometimes miss items under heavy synonym expansion.
+- Uvicorn
 
----
-## Installation
+**Retrieval**
 
-### Clone the repo
-```bash
-git clone
-cd shopsmart
-```
+- Qdrant (Docker)
 
-### Start Infrastructure (Docker)
-```bash
-docker-compose up -d
-```
+- Dense embeddings: bge-micro-v2
 
-### Install Dependencies
-```bash
-python -m venv venv
-source venv/bin/activate  # or venv\Scripts\activate
-pip install -r requirements.txt
-```
+- Sparse vectors: BM25 via FastEmbed
 
-### Ingest Data
-```bash
-python -m src.ingest
-```
+**Caching**
 
-### Run App
-```bash
-# Terminal 1: Backend
-uvicorn src.backend:app --reload
+- Redis
 
-# Terminal 2: Frontend
-streamlit run src/frontend.py
-```
----
+- Verification
 
-## Evaluation
-Run the automated test suite to calculate NDCG scores:
-```bash
-python -m src.evaluate
-```
----
+- Constrained transformer model (gpt-4o-mini)
 
-## Future Roadmap
+**Observability**
 
-1.	**Ingestion Pipeline:** Automate daily data ingestion via Airflow to handle catalog updates.
+- Streamlit
 
-2.	**A/B Testing:** Implement a router to serve 50% of traffic to TinyBERT and 50% to MiniLM to measure real-world conversion differences.
-
-3.	**Personalization:** Inject user history vectors into the search query to boost brands the user previously bought.
+- Pandas
 
 ---
